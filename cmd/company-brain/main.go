@@ -40,6 +40,8 @@ type uploadResponse struct {
 	Documents []documentDTO           `json:"documents"`
 	Hub       *brain.DocumentationHub `json:"hub,omitempty"`
 	HubError  string                  `json:"hubError,omitempty"`
+	CAD       *brain.CADModel         `json:"cad,omitempty"`
+	Impacts   []brain.FileCADImpact   `json:"impacts"`
 }
 
 type chatRequest struct {
@@ -71,6 +73,7 @@ func main() {
 	s := &server{store: store, hubPath: hubPath, cadPath: cadPath, codexPath: codexPath, staticRoot: staticRoot}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.health)
+	mux.HandleFunc("/api/cad/impacts", s.cadImpacts)
 	mux.HandleFunc("/api/cad", s.cad)
 	mux.HandleFunc("/api/documents", s.documents)
 	mux.HandleFunc("/api/documents/", s.documentByID)
@@ -112,12 +115,43 @@ func (s *server) cad(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cad, err := s.readCAD()
+	cad, _, err := s.effectiveCAD()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, cad)
+}
+
+func (s *server) cadImpacts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+
+	_, impacts, err := s.effectiveCAD()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, impacts)
+}
+
+// effectiveCAD returns the base CAD with every uploaded document's CAD directive
+// applied on top, along with the per-file impact log. The base model (chat
+// edits) is stored on disk; document directives are layered on at read time so
+// removing a directive file reverts its effect.
+func (s *server) effectiveCAD() (brain.CADModel, []brain.FileCADImpact, error) {
+	base, err := s.readCAD()
+	if err != nil {
+		return brain.CADModel{}, nil, err
+	}
+	docs, err := brain.LoadCorpus(s.store, nil)
+	if err != nil {
+		return brain.CADModel{}, nil, err
+	}
+	effective, impacts := brain.ApplyDocumentCADDirectives(base, docs)
+	return effective, impacts, nil
 }
 
 func (s *server) documentByID(w http.ResponseWriter, r *http.Request) {
@@ -203,12 +237,19 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res := uploadResponse{Documents: saved}
+	res := uploadResponse{Documents: saved, Impacts: []brain.FileCADImpact{}}
 	hub, err := s.rebuildHub(r.Context())
 	if err != nil {
 		res.HubError = err.Error()
 	} else {
 		res.Hub = hub
+	}
+
+	if cad, impacts, err := s.effectiveCAD(); err != nil {
+		log.Printf("compute cad impacts after upload: %v", err)
+	} else {
+		res.CAD = &cad
+		res.Impacts = impacts
 	}
 
 	writeJSON(w, http.StatusCreated, res)
@@ -241,7 +282,7 @@ func (s *server) chat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	currentCAD, err := s.readCAD()
+	currentCAD, _, err := s.effectiveCAD()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -270,10 +311,16 @@ func (s *server) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	effectiveCAD, _, err := s.effectiveCAD()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
 	writeJSON(w, http.StatusOK, chatResponse{
 		Answer:  strings.TrimSpace(result.Answer),
 		Sources: snippets,
-		CAD:     nextCAD,
+		CAD:     effectiveCAD,
 	})
 }
 

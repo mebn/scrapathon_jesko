@@ -4,7 +4,9 @@ import * as THREE from "three";
 import {
   BookOpenText,
   Box,
+  ChevronLeft,
   FileText,
+  Wand2,
   FolderKanban,
   Loader2,
   MessageSquareText,
@@ -14,7 +16,6 @@ import {
   UploadCloud,
 } from "lucide-react";
 import { Button } from "./components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { Textarea } from "./components/ui/textarea";
 import "./styles.css";
 
@@ -78,10 +79,17 @@ type ChatResponse = {
   cad: CADModel;
 };
 
+type FileCADImpact = {
+  source: string;
+  changes: string[];
+};
+
 type UploadResponse = {
   documents: DocumentItem[];
   hub?: DocumentationHub;
   hubError?: string;
+  cad?: CADModel;
+  impacts?: FileCADImpact[];
 };
 
 const emptyHub: DocumentationHub = { summary: "No documentation generated yet.", sections: [] };
@@ -99,6 +107,10 @@ const api = {
   async getCAD() {
     const res = await fetch("/api/cad");
     return readJSON<CADModel>(res);
+  },
+  async listImpacts() {
+    const res = await fetch("/api/cad/impacts");
+    return readJSON<FileCADImpact[]>(res);
   },
   async listDocuments() {
     const res = await fetch("/api/documents");
@@ -150,10 +162,13 @@ function App() {
   const [documents, setDocuments] = React.useState<DocumentItem[]>([]);
   const [hub, setHub] = React.useState<DocumentationHub>(emptyHub);
   const [cad, setCAD] = React.useState<CADModel>(emptyCAD);
+  const [impacts, setImpacts] = React.useState<FileCADImpact[]>([]);
   const [messages, setMessages] = React.useState<Message[]>([
     { role: "assistant", content: "Upload docs, then ask. I answer from stored files and cite names." },
   ]);
   const [question, setQuestion] = React.useState("");
+  const [tab, setTab] = React.useState<"docs" | "workspace" | "changes">("docs");
+  const [openSection, setOpenSection] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [uploading, setUploading] = React.useState(false);
   const [rebuilding, setRebuilding] = React.useState(false);
@@ -161,13 +176,16 @@ function App() {
   const fileInput = React.useRef<HTMLInputElement>(null);
 
   const pageCount = React.useMemo(() => hub.sections.reduce((total, section) => total + section.pages.length, 0), [hub.sections]);
+  const active = React.useMemo(() => hub.sections.find((section) => section.title === openSection) ?? null, [hub.sections, openSection]);
+  const impactedSources = React.useMemo(() => new Set(impacts.map((impact) => impact.source)), [impacts]);
 
   React.useEffect(() => {
-    Promise.all([api.listDocuments(), api.listHub(), api.getCAD()])
-      .then(([docs, documentationHub, cadModel]) => {
+    Promise.all([api.listDocuments(), api.listHub(), api.getCAD(), api.listImpacts().catch(() => [])])
+      .then(([docs, documentationHub, cadModel, cadImpacts]) => {
         setDocuments(docs);
         setHub(normalizeHub(documentationHub));
         setCAD(normalizeCAD(cadModel));
+        setImpacts(cadImpacts ?? []);
       })
       .catch((err: Error) => setError(err.message));
   }, []);
@@ -180,6 +198,8 @@ function App() {
       const res = await api.upload(files);
       setDocuments(await api.listDocuments());
       if (res.hub) setHub(normalizeHub(res.hub));
+      if (res.cad) setCAD(normalizeCAD(res.cad));
+      setImpacts(res.impacts ?? []);
       if (res.hubError) setError(`Files uploaded. Documentation hub failed: ${res.hubError}`);
     } catch (err) {
       setError((err as Error).message);
@@ -195,7 +215,14 @@ function App() {
     try {
       await api.deleteDocument(id);
       setDocuments((items) => items.filter((item) => item.id !== id));
-      setHub(normalizeHub(await api.listHub()));
+      const [documentationHub, cadModel, cadImpacts] = await Promise.all([
+        api.listHub(),
+        api.getCAD(),
+        api.listImpacts().catch(() => []),
+      ]);
+      setHub(normalizeHub(documentationHub));
+      setCAD(normalizeCAD(cadModel));
+      setImpacts(cadImpacts ?? []);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -226,6 +253,7 @@ function App() {
     try {
       const res = await api.chat(text);
       setCAD(normalizeCAD(res.cad));
+      api.listImpacts().then((cadImpacts) => setImpacts(cadImpacts ?? [])).catch(() => undefined);
       const responseSources = Array.isArray(res.sources) ? res.sources : [];
       const sources =
         responseSources.length > 0
@@ -240,212 +268,317 @@ function App() {
     }
   }
 
+  const navItems = [
+    { id: "docs" as const, label: "Documentation", icon: FolderKanban, badge: 0 },
+    { id: "workspace" as const, label: "CAD & Chat", icon: Box, badge: 0 },
+    { id: "changes" as const, label: "CAD Changes", icon: Wand2, badge: impacts.length },
+  ];
+
   return (
-    <main className="h-screen overflow-hidden bg-background text-foreground">
-      <div className="mx-auto flex h-full min-h-0 w-full max-w-[1540px] flex-col gap-5 px-4 py-5 md:px-6">
-        <header className="shrink-0 flex flex-col gap-2 border-b pb-4 xl:flex-row xl:items-end xl:justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-normal">Company Brain</h1>
-            <p className="text-sm text-muted-foreground">Upload fragments, generate docs, ask against local files.</p>
-          </div>
-          <div className="flex flex-wrap gap-3 text-sm text-muted-foreground">
-            <span>{documents.length} documents</span>
-            <span>{pageCount} pages</span>
-          </div>
-        </header>
-
-        <div className="grid min-h-0 flex-1 gap-5 overflow-hidden xl:grid-cols-[330px_minmax(420px,1fr)_440px]">
-          <section className="flex min-h-0 flex-col gap-4 overflow-hidden">
-            <Card className="shrink-0">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <UploadCloud className="size-4" />
-                  Upload
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <button
-                  className="flex min-h-36 w-full flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-input bg-muted/30 px-4 text-center transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-70"
-                  onClick={() => fileInput.current?.click()}
-                  type="button"
-                  disabled={uploading}
-                >
-                  {uploading ? <Loader2 className="size-6 animate-spin" /> : <UploadCloud className="size-6" />}
-                  <span className="text-sm font-medium">
-                    {uploading ? "Structuring uploaded files" : "Choose text documents"}
+    <main className="flex h-screen overflow-hidden bg-background text-foreground">
+      <aside className="flex w-56 shrink-0 flex-col bg-muted/40 px-3 py-4">
+        <div className="px-2">
+          <h1 className="text-lg font-semibold tracking-tight">Company Brain</h1>
+          <p className="text-xs text-muted-foreground">Docs · CAD · Chat</p>
+        </div>
+        <nav className="mt-5 flex flex-col gap-1">
+          {navItems.map((item) => {
+            const active = tab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setTab(item.id)}
+                className={
+                  "flex items-center gap-2 rounded-md px-2.5 py-2 text-sm font-medium transition-colors " +
+                  (active ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground")
+                }
+              >
+                <item.icon className="size-4" />
+                <span className="flex-1 text-left">{item.label}</span>
+                {item.badge > 0 && (
+                  <span
+                    className={
+                      "rounded-full px-1.5 py-0.5 text-[10px] font-semibold " +
+                      (active ? "bg-primary-foreground/20 text-primary-foreground" : "bg-primary text-primary-foreground")
+                    }
+                  >
+                    {item.badge}
                   </span>
-                  <span className="text-xs text-muted-foreground">TXT, Markdown, CSV, JSON, logs, code, HTML, XML</span>
-                </button>
-                <input
-                  ref={fileInput}
-                  className="hidden"
-                  type="file"
-                  multiple
-                  onChange={(event) => handleUpload(event.target.files)}
-                />
-              </CardContent>
-            </Card>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+        <div className="mt-auto flex flex-col gap-1 px-2 text-xs text-muted-foreground">
+          <span>{documents.length} documents</span>
+          <span>{pageCount} pages</span>
+        </div>
+      </aside>
 
-            <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <FileText className="size-4" />
-                  Documents
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="min-h-0 flex-1 overflow-hidden">
-                <div className="flex h-full min-h-0 flex-col gap-2 overflow-auto pr-1">
-                  {documents.length === 0 ? (
-                    <div className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">No uploads yet.</div>
-                  ) : (
-                    documents.map((doc) => (
-                      <div key={doc.id} className="flex items-center gap-3 rounded-md border bg-card p-3">
-                        <FileText className="size-4 shrink-0 text-muted-foreground" />
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-sm font-medium">{doc.name}</div>
-                          <div className="text-xs text-muted-foreground">{formatBytes(doc.size)}</div>
-                        </div>
-                        <Button
-                          aria-label={`Delete ${doc.name}`}
-                          title={`Delete ${doc.name}`}
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handleDelete(doc.id)}
-                          disabled={rebuilding || uploading}
-                        >
-                          <Trash2 />
-                        </Button>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          </section>
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {error && (
+          <div className="shrink-0 bg-destructive/10 px-4 py-2 text-sm text-destructive-foreground/90">{error}</div>
+        )}
 
-          <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border bg-card">
-            <div className="shrink-0 flex items-center justify-between gap-3 border-b p-4">
-              <div className="flex items-center gap-2">
-                <FolderKanban className="size-4" />
-                <h2 className="text-base font-semibold tracking-normal">Documentation Hub</h2>
-              </div>
-              <Button variant="outline" size="sm" onClick={handleRebuild} disabled={rebuilding || uploading || documents.length === 0}>
-                {rebuilding ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-                Rebuild
-              </Button>
-            </div>
-            <div className="shrink-0 border-b p-4">
-              <CADPreview cad={cad} />
-            </div>
-            <div className="shrink-0 border-b px-4 py-3 text-sm text-muted-foreground">
-              {rebuilding || uploading ? "Codex is reading uploaded files and generating documentation." : hub.summary}
-            </div>
-            <div className="min-h-0 flex-1 overflow-auto p-4">
-              {hub.sections.length === 0 ? (
-                <div className="flex min-h-48 items-center justify-center rounded-lg border bg-muted/30 p-6 text-center text-sm text-muted-foreground">
-                  No documentation generated from uploaded files.
-                </div>
-              ) : (
-                <div className="space-y-5">
-                  {hub.sections.map((section) => (
-                    <div key={section.title} className="space-y-2">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="flex items-center gap-2 text-sm font-semibold">
-                            <BookOpenText className="size-4 text-muted-foreground" />
-                            {section.title}
-                            <span className="rounded-md bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
-                              {section.pages.length}
+        {tab === "docs" ? (
+          <div className="flex min-h-0 flex-1 gap-3 overflow-hidden p-3">
+            <section className="flex w-72 shrink-0 flex-col gap-3 overflow-hidden">
+              <button
+                className="flex min-h-28 w-full flex-col items-center justify-center gap-2 rounded-lg bg-muted/40 px-4 text-center transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-70"
+                onClick={() => fileInput.current?.click()}
+                type="button"
+                disabled={uploading}
+              >
+                {uploading ? <Loader2 className="size-5 animate-spin" /> : <UploadCloud className="size-5" />}
+                <span className="text-sm font-medium">{uploading ? "Structuring files" : "Upload documents"}</span>
+                <span className="text-xs text-muted-foreground">TXT, Markdown, CSV, JSON, code, HTML</span>
+              </button>
+              <input
+                ref={fileInput}
+                className="hidden"
+                type="file"
+                multiple
+                onChange={(event) => handleUpload(event.target.files)}
+              />
+              <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-auto pr-1">
+                {documents.length === 0 ? (
+                  <div className="rounded-md bg-muted/40 p-3 text-sm text-muted-foreground">No uploads yet.</div>
+                ) : (
+                  documents.map((doc) => (
+                    <div key={doc.id} className="flex items-center gap-2 rounded-md bg-muted/40 px-2.5 py-2">
+                      <FileText className="size-4 shrink-0 text-muted-foreground" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate text-sm font-medium">{doc.name}</span>
+                          {impactedSources.has(doc.name) && (
+                            <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                              <Wand2 className="size-2.5" />
+                              CAD
                             </span>
-                          </div>
-                          {section.description && (
-                            <div className="mt-1 text-sm text-muted-foreground">{section.description}</div>
                           )}
                         </div>
+                        <div className="text-xs text-muted-foreground">{formatBytes(doc.size)}</div>
                       </div>
-                      <div className="grid gap-2 2xl:grid-cols-2">
-                        {section.pages.map((page) => (
-                          <article key={`${section.title}-${page.title}-${page.source}`} className="rounded-lg border bg-background p-3">
-                            <div className="flex items-start gap-2">
-                              <div className="min-w-0 flex-1">
-                                <div className="text-sm font-medium">{page.title}</div>
-                              </div>
-                            </div>
-                            <p className="mt-2 whitespace-pre-line text-sm leading-5">{page.body}</p>
-                            <div className="mt-3 flex flex-wrap gap-1.5">
+                      <Button
+                        aria-label={`Delete ${doc.name}`}
+                        title={`Delete ${doc.name}`}
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => handleDelete(doc.id)}
+                        disabled={rebuilding || uploading}
+                      >
+                        <Trash2 />
+                      </Button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div className="flex shrink-0 items-center justify-between gap-3 pb-3">
+                <div className="flex items-center gap-2">
+                  <FolderKanban className="size-4 text-muted-foreground" />
+                  <h2 className="text-base font-semibold tracking-normal">Documentation Hub</h2>
+                </div>
+                <Button variant="outline" size="sm" onClick={handleRebuild} disabled={rebuilding || uploading || documents.length === 0}>
+                  {rebuilding ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+                  Rebuild
+                </Button>
+              </div>
+              <div className="shrink-0 pb-3 text-sm text-muted-foreground">
+                {rebuilding || uploading ? "Codex is reading uploaded files and generating documentation." : hub.summary}
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto pr-1">
+                {hub.sections.length === 0 ? (
+                  <div className="flex min-h-48 items-center justify-center rounded-lg bg-muted/40 p-6 text-center text-sm text-muted-foreground">
+                    No documentation generated from uploaded files.
+                  </div>
+                ) : active ? (
+                  <article className="space-y-4">
+                    <button
+                      type="button"
+                      onClick={() => setOpenSection(null)}
+                      className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+                    >
+                      <ChevronLeft className="size-4" />
+                      All sections
+                    </button>
+                    <div>
+                      <h3 className="text-lg font-semibold tracking-tight">{active.title}</h3>
+                      {active.description && <p className="mt-1 text-sm text-muted-foreground">{active.description}</p>}
+                    </div>
+                    <div className="space-y-5">
+                      {active.pages.map((page) => (
+                        <section key={`${active.title}-${page.title}-${page.source}`} className="space-y-2">
+                          <h4 className="text-sm font-semibold">{page.title}</h4>
+                          <p className="whitespace-pre-line text-sm leading-6">{page.body}</p>
+                          {page.tags.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5">
                               {page.tags.map((tag) => (
                                 <span key={tag} className="rounded-md bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
                                   {tag}
                                 </span>
                               ))}
                             </div>
-                            {page.related.length > 0 && (
-                              <div className="mt-2 text-xs text-muted-foreground">Related: {page.related.join(", ")}</div>
-                            )}
-                            {page.source && <div className="mt-2 text-xs text-muted-foreground">Source: {page.source}</div>}
-                          </article>
-                        ))}
+                          )}
+                          {page.related.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                              Related:
+                              {page.related.map((rel) => {
+                                const target = sectionForPage(hub, rel);
+                                return target ? (
+                                  <button
+                                    key={rel}
+                                    type="button"
+                                    onClick={() => setOpenSection(target)}
+                                    className="text-primary hover:underline"
+                                  >
+                                    [[{rel}]]
+                                  </button>
+                                ) : (
+                                  <span key={rel} className="text-muted-foreground">[[{rel}]]</span>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {page.source && <div className="text-xs text-muted-foreground">Source: {page.source}</div>}
+                        </section>
+                      ))}
+                    </div>
+                  </article>
+                ) : (
+                  <nav className="flex flex-col gap-1">
+                    {hub.sections.map((section) => (
+                      <button
+                        key={section.title}
+                        type="button"
+                        onClick={() => setOpenSection(section.title)}
+                        className="flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm transition-colors hover:bg-muted"
+                      >
+                        <BookOpenText className="size-4 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 flex-1 truncate font-medium text-primary">{section.title}</span>
+                        <span className="shrink-0 rounded-md bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
+                          {section.pages.length}
+                        </span>
+                      </button>
+                    ))}
+                  </nav>
+                )}
+              </div>
+            </section>
+          </div>
+        ) : tab === "workspace" ? (
+          <div className="flex min-h-0 flex-1 gap-3 overflow-hidden p-3">
+            <section className="flex min-h-0 basis-3/5 flex-col overflow-hidden">
+              <CADPreview cad={cad} />
+            </section>
+
+            <section className="flex min-h-0 basis-2/5 flex-col overflow-hidden rounded-lg bg-muted/40">
+              <div className="flex shrink-0 items-center gap-2 px-4 py-3">
+                <MessageSquareText className="size-4 text-muted-foreground" />
+                <h2 className="text-base font-semibold tracking-normal">Ask</h2>
+              </div>
+              <div className="min-h-0 flex-1 space-y-3 overflow-auto px-4">
+                {messages.map((message, index) => (
+                  <div
+                    key={`${message.role}-${index}`}
+                    className={message.role === "user" ? "ml-auto max-w-[82%]" : "mr-auto max-w-[86%]"}
+                  >
+                    <div
+                      className={
+                        message.role === "user"
+                          ? "rounded-lg bg-primary px-4 py-2.5 text-sm leading-6 text-primary-foreground"
+                          : "rounded-lg bg-background px-4 py-2.5 text-sm leading-6"
+                      }
+                    >
+                      {message.content}
+                    </div>
+                  </div>
+                ))}
+                {busy && (
+                  <div className="mr-auto flex max-w-[86%] items-center gap-2 rounded-lg bg-background px-4 py-2.5 text-sm text-muted-foreground">
+                    <Loader2 className="size-4 animate-spin" />
+                    Codex reading uploaded docs
+                  </div>
+                )}
+              </div>
+              <form className="shrink-0 p-3" onSubmit={handleAsk}>
+                <div className="flex gap-2">
+                  <Textarea
+                    value={question}
+                    onChange={(event) => setQuestion(event.target.value)}
+                    placeholder="Ask about docs or modify the CAD..."
+                    className="min-h-14 resize-none"
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                        event.currentTarget.form?.requestSubmit();
+                      }
+                    }}
+                  />
+                  <Button className="h-14 w-14 shrink-0" size="icon" type="submit" disabled={busy || !question.trim()}>
+                    {busy ? <Loader2 className="animate-spin" /> : <Send />}
+                  </Button>
+                </div>
+              </form>
+            </section>
+          </div>
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-3">
+            <div className="flex shrink-0 items-center gap-2 pb-1">
+              <Wand2 className="size-4 text-muted-foreground" />
+              <h2 className="text-base font-semibold tracking-normal">CAD Changes</h2>
+            </div>
+            <p className="shrink-0 pb-3 text-sm text-muted-foreground">
+              Files containing instructions that modified the CAD model. Remove a file to revert its changes.
+            </p>
+            <div className="min-h-0 flex-1 overflow-auto pr-1">
+              {impacts.length === 0 ? (
+                <div className="flex min-h-48 items-center justify-center rounded-lg bg-muted/40 p-6 text-center text-sm text-muted-foreground">
+                  No uploaded file changes the CAD yet. Upload a file with an instruction like
+                  <br />
+                  "no red allowed, change all red to blue".
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {impacts.map((impact) => (
+                    <div key={impact.source} className="rounded-lg bg-muted/40 p-3">
+                      <div className="flex items-center gap-2">
+                        <FileText className="size-4 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 flex-1 truncate text-sm font-medium">{impact.source}</span>
+                        <span className="shrink-0 rounded-full bg-primary/15 px-2 py-0.5 text-xs font-semibold text-primary">
+                          {impact.changes.length} {impact.changes.length === 1 ? "change" : "changes"}
+                        </span>
                       </div>
+                      <ul className="mt-2 space-y-1">
+                        {impact.changes.map((change, index) => (
+                          <li key={index} className="flex items-start gap-2 text-sm">
+                            <Wand2 className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                            <span>{change}</span>
+                          </li>
+                        ))}
+                      </ul>
                     </div>
                   ))}
                 </div>
               )}
             </div>
-          </section>
-
-          <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border bg-card">
-            <div className="shrink-0 flex items-center gap-2 border-b p-4">
-              <MessageSquareText className="size-4" />
-              <h2 className="text-base font-semibold tracking-normal">Ask</h2>
-            </div>
-            <div className="min-h-0 flex-1 space-y-4 overflow-auto p-4">
-              {messages.map((message, index) => (
-                <div
-                  key={`${message.role}-${index}`}
-                  className={message.role === "user" ? "ml-auto max-w-[82%]" : "mr-auto max-w-[86%]"}
-                >
-                  <div
-                    className={
-                      message.role === "user"
-                        ? "rounded-lg bg-primary px-4 py-3 text-sm leading-6 text-primary-foreground"
-                        : "rounded-lg border bg-background px-4 py-3 text-sm leading-6"
-                    }
-                  >
-                    {message.content}
-                  </div>
-                </div>
-              ))}
-              {busy && (
-                <div className="mr-auto flex max-w-[86%] items-center gap-2 rounded-lg border bg-background px-4 py-3 text-sm text-muted-foreground">
-                  <Loader2 className="size-4 animate-spin" />
-                  Codex reading uploaded docs
-                </div>
-              )}
-            </div>
-            <form className="shrink-0 border-t p-4" onSubmit={handleAsk}>
-              {error && <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm">{error}</div>}
-              <div className="flex gap-3">
-                <Textarea
-                  value={question}
-                  onChange={(event) => setQuestion(event.target.value)}
-                  placeholder="Ask about docs or modify the CAD..."
-                  className="min-h-14 resize-none"
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                      event.currentTarget.form?.requestSubmit();
-                    }
-                  }}
-                />
-                <Button className="h-14 w-14 shrink-0" size="icon" type="submit" disabled={busy || !question.trim()}>
-                  {busy ? <Loader2 className="animate-spin" /> : <Send />}
-                </Button>
-              </div>
-            </form>
-          </section>
-        </div>
+          </div>
+        )}
       </div>
     </main>
   );
+}
+
+function sectionForPage(hub: DocumentationHub, pageTitle: string): string | null {
+  const needle = pageTitle.trim().toLowerCase();
+  const match = hub.sections.find(
+    (section) =>
+      section.title.trim().toLowerCase() === needle ||
+      section.pages.some((page) => page.title.trim().toLowerCase() === needle),
+  );
+  return match ? match.title : null;
 }
 
 function normalizeHub(hub: DocumentationHub): DocumentationHub {
@@ -526,10 +659,16 @@ function CADPreview({ cad }: { cad: CADModel }) {
         canvas.releasePointerCapture(event.pointerId);
       }
     };
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const factor = Math.exp(event.deltaY * 0.0015);
+      camera.position.z = clamp(camera.position.z * factor, 1.6, 16);
+    };
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointercancel", onPointerUp);
+    canvas.addEventListener("wheel", onWheel, { passive: false });
 
     const resize = () => {
       const rect = canvas.getBoundingClientRect();
@@ -557,14 +696,15 @@ function CADPreview({ cad }: { cad: CADModel }) {
       canvas.removeEventListener("pointermove", onPointerMove);
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointercancel", onPointerUp);
+      canvas.removeEventListener("wheel", onWheel);
       renderer.dispose();
       disposeObject(scene);
     };
   }, [cad]);
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Box className="size-4 text-muted-foreground" />
           <div>
@@ -574,13 +714,13 @@ function CADPreview({ cad }: { cad: CADModel }) {
             </div>
           </div>
         </div>
-        <div className="rounded-md border bg-muted/30 px-2 py-1 text-xs text-muted-foreground">Live CAD</div>
+        <div className="rounded-md bg-muted/40 px-2 py-1 text-xs text-muted-foreground">Live CAD</div>
       </div>
-      <div className="rounded-lg border bg-background p-2">
-        <canvas ref={canvasRef} className="h-[280px] w-full cursor-grab rounded-md active:cursor-grabbing" />
+      <div className="min-h-0 flex-1 rounded-lg bg-muted/40 p-2">
+        <canvas ref={canvasRef} className="h-full w-full cursor-grab rounded-md active:cursor-grabbing" />
       </div>
       {cad.notes.length > 0 && (
-        <div className="line-clamp-2 text-xs text-muted-foreground">{cad.notes[cad.notes.length - 1]}</div>
+        <div className="line-clamp-2 shrink-0 text-xs text-muted-foreground">{cad.notes[cad.notes.length - 1]}</div>
       )}
     </div>
   );
