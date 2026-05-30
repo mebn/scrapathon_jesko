@@ -1,0 +1,11 @@
+data/uploads/*
+!data/uploads/.gitkeep
+data/link-library.json
+data/documentation-hub.json
+data/cad-state.json
+web/dist/
+web/node_modules/
+web/*.tsbuildinfo
+web/vite.config.d.ts
+web/vite.config.js
+.DS_Store
