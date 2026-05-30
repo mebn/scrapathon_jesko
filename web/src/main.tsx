@@ -10,8 +10,10 @@ import {
   FolderKanban,
   Loader2,
   MessageSquareText,
+  Plus,
   RefreshCw,
   Send,
+  Smile,
   Trash2,
   UploadCloud,
 } from "lucide-react";
@@ -158,7 +160,7 @@ async function readError(res: Response) {
   }
 }
 
-function App() {
+function App({ onHome }: { onHome: () => void }) {
   const [documents, setDocuments] = React.useState<DocumentItem[]>([]);
   const [hub, setHub] = React.useState<DocumentationHub>(emptyHub);
   const [cad, setCAD] = React.useState<CADModel>(emptyCAD);
@@ -277,10 +279,13 @@ function App() {
   return (
     <main className="flex h-screen overflow-hidden bg-background text-foreground">
       <aside className="flex w-56 shrink-0 flex-col bg-muted/40 px-3 py-4">
-        <div className="px-2">
-          <h1 className="text-lg font-semibold tracking-tight">Company Brain</h1>
-          <p className="text-xs text-muted-foreground">Docs · CAD · Chat</p>
-        </div>
+        <button type="button" onClick={onHome} className="flex flex-col rounded-md px-2 py-1 text-left transition-colors hover:bg-muted">
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <ChevronLeft className="size-3.5" />
+            Projects
+          </span>
+          <span className="text-lg font-semibold tracking-tight">Smiley</span>
+        </button>
         <nav className="mt-5 flex flex-col gap-1">
           {navItems.map((item) => {
             const active = tab === item.id;
@@ -863,8 +868,67 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+type Project = {
+  id: string;
+  name: string;
+  description: string;
+};
+
+const projects: Project[] = [
+  { id: "smiley", name: "Smiley", description: "Docs, documentation hub, and live CAD workspace." },
+];
+
+function Home({ onOpen }: { onOpen: (id: string) => void }) {
+  return (
+    <main className="min-h-screen overflow-auto bg-background text-foreground">
+      <div className="mx-auto w-full max-w-5xl px-6 py-16">
+        <header className="mb-10">
+          <h1 className="text-3xl font-semibold tracking-tight">Company Brain</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Select a project to open its workspace.</p>
+        </header>
+
+        <div className="grid grid-cols-3 gap-4">
+          {projects.map((project) => (
+            <button
+              key={project.id}
+              type="button"
+              onClick={() => onOpen(project.id)}
+              className="flex h-44 flex-col justify-between rounded-lg bg-muted/40 p-5 text-left transition-colors hover:bg-muted"
+            >
+              <div className="flex size-10 items-center justify-center rounded-md bg-primary text-primary-foreground">
+                <Smile className="size-5" />
+              </div>
+              <div>
+                <div className="text-base font-semibold">{project.name}</div>
+                <div className="mt-1 line-clamp-2 text-sm text-muted-foreground">{project.description}</div>
+              </div>
+            </button>
+          ))}
+
+          <button
+            type="button"
+            className="flex h-44 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-input text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <Plus className="size-6" />
+            <span className="text-sm font-medium">New project</span>
+          </button>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function Root() {
+  const [openProject, setOpenProject] = React.useState<string | null>(null);
+
+  if (!openProject) {
+    return <Home onOpen={setOpenProject} />;
+  }
+  return <App onHome={() => setOpenProject(null)} />;
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <Root />
   </React.StrictMode>,
 );
