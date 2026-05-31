@@ -5,9 +5,11 @@ import {
   BookOpenText,
   Box,
   ChevronLeft,
+  Clock3,
   FileText,
   Wand2,
   FolderKanban,
+  LayoutDashboard,
   Loader2,
   MessageSquareText,
   Plus,
@@ -16,6 +18,7 @@ import {
   Smile,
   Trash2,
   UploadCloud,
+  X,
 } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
@@ -70,6 +73,15 @@ type CADModel = {
   notes: string[];
 };
 
+type CADSelection = {
+  id: string;
+  label: string;
+  type: string;
+  color: string;
+  material: string;
+  dimensions: { width: number; height: number; depth?: number };
+};
+
 type Message = {
   role: "user" | "assistant";
   content: string;
@@ -93,6 +105,13 @@ type UploadResponse = {
   cad?: CADModel;
   impacts?: FileCADImpact[];
 };
+
+type AppTab = "dashboard" | "docs" | "workspace" | "changes";
+
+type AppRoute =
+  | { page: "home" }
+  | { page: "project"; projectId: string; tab: AppTab; documentationSection?: string }
+  | { page: "not-found" };
 
 const emptyHub: DocumentationHub = { summary: "No documentation generated yet.", sections: [] };
 const emptyCAD: CADModel = {
@@ -160,7 +179,19 @@ async function readError(res: Response) {
   }
 }
 
-function App({ onHome }: { onHome: () => void }) {
+function App({
+  tab,
+  documentationSection,
+  onHome,
+  onTabChange,
+  onDocumentationSectionChange,
+}: {
+  tab: AppTab;
+  documentationSection?: string;
+  onHome: () => void;
+  onTabChange: (tab: AppTab) => void;
+  onDocumentationSectionChange: (section?: string) => void;
+}) {
   const [documents, setDocuments] = React.useState<DocumentItem[]>([]);
   const [hub, setHub] = React.useState<DocumentationHub>(emptyHub);
   const [cad, setCAD] = React.useState<CADModel>(emptyCAD);
@@ -169,8 +200,6 @@ function App({ onHome }: { onHome: () => void }) {
     { role: "assistant", content: "Upload docs, then ask. I answer from stored files and cite names." },
   ]);
   const [question, setQuestion] = React.useState("");
-  const [tab, setTab] = React.useState<"docs" | "workspace" | "changes">("docs");
-  const [openSection, setOpenSection] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [uploading, setUploading] = React.useState(false);
   const [rebuilding, setRebuilding] = React.useState(false);
@@ -178,8 +207,24 @@ function App({ onHome }: { onHome: () => void }) {
   const fileInput = React.useRef<HTMLInputElement>(null);
 
   const pageCount = React.useMemo(() => hub.sections.reduce((total, section) => total + section.pages.length, 0), [hub.sections]);
-  const active = React.useMemo(() => hub.sections.find((section) => section.title === openSection) ?? null, [hub.sections, openSection]);
+  const active = React.useMemo(
+    () => hub.sections.find((section) => sectionSlug(section.title) === documentationSection) ?? null,
+    [hub.sections, documentationSection],
+  );
   const impactedSources = React.useMemo(() => new Set(impacts.map((impact) => impact.source)), [impacts]);
+  const aiChanges = React.useMemo(() => {
+    const modifiedByName = new Map(documents.map((document) => [document.name, document.modified]));
+    return impacts
+      .flatMap((impact) =>
+        impact.changes.map((change, index) => ({
+          id: `${impact.source}-${index}-${change}`,
+          source: impact.source,
+          description: change,
+          happenedAt: modifiedByName.get(impact.source),
+        })),
+      )
+      .sort((a, b) => (b.happenedAt ? Date.parse(b.happenedAt) : 0) - (a.happenedAt ? Date.parse(a.happenedAt) : 0));
+  }, [documents, impacts]);
 
   React.useEffect(() => {
     Promise.all([api.listDocuments(), api.listHub(), api.getCAD(), api.listImpacts().catch(() => [])])
@@ -271,6 +316,7 @@ function App({ onHome }: { onHome: () => void }) {
   }
 
   const navItems = [
+    { id: "dashboard" as const, label: "Dashboard", icon: LayoutDashboard, badge: 0 },
     { id: "docs" as const, label: "Documentation", icon: FolderKanban, badge: 0 },
     { id: "workspace" as const, label: "CAD & Chat", icon: Box, badge: 0 },
     { id: "changes" as const, label: "CAD Changes", icon: Wand2, badge: impacts.length },
@@ -293,7 +339,7 @@ function App({ onHome }: { onHome: () => void }) {
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setTab(item.id)}
+                onClick={() => onTabChange(item.id)}
                 className={
                   "flex items-center gap-2 rounded-md px-2.5 py-2 text-sm font-medium transition-colors " +
                   (active ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground")
@@ -326,7 +372,57 @@ function App({ onHome }: { onHome: () => void }) {
           <div className="shrink-0 bg-destructive/10 px-4 py-2 text-sm text-destructive-foreground/90">{error}</div>
         )}
 
-        {tab === "docs" ? (
+        {tab === "dashboard" ? (
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-3">
+            <div className="shrink-0 pb-4">
+              <div className="flex items-center gap-2">
+                <LayoutDashboard className="size-4 text-muted-foreground" />
+                <h2 className="text-base font-semibold tracking-normal">Dashboard</h2>
+              </div>
+              <p className="mt-1 text-sm text-muted-foreground">Project overview and AI-applied CAD activity.</p>
+            </div>
+
+            <div className="grid shrink-0 grid-cols-2 gap-3 pb-4">
+              <div className="rounded-lg bg-muted/40 p-4">
+                <div className="text-sm text-muted-foreground">Documents</div>
+                <div className="mt-2 text-3xl font-semibold tracking-tight">{documents.length}</div>
+              </div>
+              <div className="rounded-lg bg-muted/40 p-4">
+                <div className="text-sm text-muted-foreground">Changes made by AI</div>
+                <div className="mt-2 text-3xl font-semibold tracking-tight">{aiChanges.length}</div>
+              </div>
+            </div>
+
+            <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div className="flex shrink-0 items-center gap-2 pb-3">
+                <Wand2 className="size-4 text-muted-foreground" />
+                <h3 className="text-sm font-semibold">AI changes</h3>
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto pr-1">
+                {aiChanges.length === 0 ? (
+                  <div className="flex min-h-48 items-center justify-center rounded-lg bg-muted/40 p-6 text-center text-sm text-muted-foreground">
+                    No AI-applied CAD changes yet.
+                  </div>
+                ) : (
+                  <div className="divide-y rounded-lg bg-muted/40">
+                    {aiChanges.map((change) => (
+                      <div key={change.id} className="flex items-center gap-3 px-3 py-2.5">
+                        <div className="flex min-w-0 flex-1 items-center gap-2">
+                          <Wand2 className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                          <span className="truncate text-sm">{change.description}</span>
+                        </div>
+                        <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+                          <Clock3 className="size-3" />
+                          {formatTimestamp(change.happenedAt)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </section>
+          </div>
+        ) : tab === "docs" ? (
           <div className="flex min-h-0 flex-1 gap-3 overflow-hidden p-3">
             <section className="flex w-72 shrink-0 flex-col gap-3 overflow-hidden">
               <button
@@ -404,7 +500,7 @@ function App({ onHome }: { onHome: () => void }) {
                   <article className="space-y-4">
                     <button
                       type="button"
-                      onClick={() => setOpenSection(null)}
+                      onClick={() => onDocumentationSectionChange()}
                       className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
                     >
                       <ChevronLeft className="size-4" />
@@ -437,7 +533,7 @@ function App({ onHome }: { onHome: () => void }) {
                                   <button
                                     key={rel}
                                     type="button"
-                                    onClick={() => setOpenSection(target)}
+                                    onClick={() => onDocumentationSectionChange(target)}
                                     className="text-primary hover:underline"
                                   >
                                     [[{rel}]]
@@ -459,7 +555,7 @@ function App({ onHome }: { onHome: () => void }) {
                       <button
                         key={section.title}
                         type="button"
-                        onClick={() => setOpenSection(section.title)}
+                        onClick={() => onDocumentationSectionChange(section.title)}
                         className="flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm transition-colors hover:bg-muted"
                       >
                         <BookOpenText className="size-4 shrink-0 text-muted-foreground" />
@@ -586,6 +682,14 @@ function sectionForPage(hub: DocumentationHub, pageTitle: string): string | null
   return match ? match.title : null;
 }
 
+function sectionSlug(title: string) {
+  return title
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
 function normalizeHub(hub: DocumentationHub): DocumentationHub {
   return {
     summary: hub.summary || "No documentation generated yet.",
@@ -609,6 +713,10 @@ function normalizeCAD(cad: CADModel): CADModel {
 
 function CADPreview({ cad }: { cad: CADModel }) {
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
+  const clearHighlightRef = React.useRef<() => void>(() => undefined);
+  const [selectedComponent, setSelectedComponent] = React.useState<CADSelection | null>(null);
+
+  React.useEffect(() => setSelectedComponent(null), [cad]);
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
@@ -641,10 +749,47 @@ function CADPreview({ cad }: { cad: CADModel }) {
     scene.add(fillLight);
 
     let dragging = false;
+    let dragged = false;
+    let pointerDownX = 0;
+    let pointerDownY = 0;
     let lastX = 0;
     let lastY = 0;
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    let highlightedMesh: THREE.Mesh | null = null;
+    const highlightStates = new Map<THREE.MeshStandardMaterial, { emissive: number; intensity: number }>();
+    const setMeshHighlight = (mesh: THREE.Mesh | null, highlighted: boolean) => {
+      if (!mesh) return;
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      materials.forEach((material) => {
+        if (!(material instanceof THREE.MeshStandardMaterial)) return;
+        if (highlighted) {
+          highlightStates.set(material, {
+            emissive: material.emissive.getHex(),
+            intensity: material.emissiveIntensity,
+          });
+          material.emissive.setHex(0x14b8a6);
+          material.emissiveIntensity = 0.85;
+        } else {
+          const previous = highlightStates.get(material);
+          if (!previous) return;
+          material.emissive.setHex(previous.emissive);
+          material.emissiveIntensity = previous.intensity;
+          highlightStates.delete(material);
+        }
+      });
+    };
+    const highlightMesh = (mesh: THREE.Mesh | null) => {
+      setMeshHighlight(highlightedMesh, false);
+      highlightedMesh = mesh;
+      setMeshHighlight(highlightedMesh, true);
+    };
+    clearHighlightRef.current = () => highlightMesh(null);
     const onPointerDown = (event: PointerEvent) => {
       dragging = true;
+      dragged = false;
+      pointerDownX = event.clientX;
+      pointerDownY = event.clientY;
       lastX = event.clientX;
       lastY = event.clientY;
       canvas.setPointerCapture(event.pointerId);
@@ -653,6 +798,7 @@ function CADPreview({ cad }: { cad: CADModel }) {
       if (!dragging) return;
       const dx = event.clientX - lastX;
       const dy = event.clientY - lastY;
+      if (Math.abs(event.clientX - pointerDownX) + Math.abs(event.clientY - pointerDownY) > 3) dragged = true;
       group.rotation.z += dx * 0.008;
       group.rotation.x = clamp(group.rotation.x + dy * 0.006, -1.15, 1.15);
       lastX = event.clientX;
@@ -663,6 +809,16 @@ function CADPreview({ cad }: { cad: CADModel }) {
       if (canvas.hasPointerCapture(event.pointerId)) {
         canvas.releasePointerCapture(event.pointerId);
       }
+      if (dragged) return;
+      const rect = canvas.getBoundingClientRect();
+      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const hit = raycaster
+        .intersectObjects(group.children, true)
+        .find((intersection) => intersection.object.userData.cadSelection);
+      highlightMesh(hit?.object instanceof THREE.Mesh ? hit.object : null);
+      setSelectedComponent((hit?.object.userData.cadSelection as CADSelection | undefined) ?? null);
     };
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
@@ -702,6 +858,7 @@ function CADPreview({ cad }: { cad: CADModel }) {
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointercancel", onPointerUp);
       canvas.removeEventListener("wheel", onWheel);
+      clearHighlightRef.current = () => undefined;
       renderer.dispose();
       disposeObject(scene);
     };
@@ -721,8 +878,40 @@ function CADPreview({ cad }: { cad: CADModel }) {
         </div>
         <div className="rounded-md bg-muted/40 px-2 py-1 text-xs text-muted-foreground">Live CAD</div>
       </div>
-      <div className="min-h-0 flex-1 rounded-lg bg-muted/40 p-2">
+      <div className="relative min-h-0 flex-1 rounded-lg bg-muted/40 p-2">
         <canvas ref={canvasRef} className="h-full w-full cursor-grab rounded-md active:cursor-grabbing" />
+        {selectedComponent && (
+          <div className="absolute bottom-4 right-4 w-64 rounded-lg bg-background/95 p-3 shadow-lg ring-1 ring-border backdrop-blur">
+            <div className="flex items-start gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-semibold">{selectedComponent.label}</div>
+                <div className="text-xs capitalize text-muted-foreground">{selectedComponent.type}</div>
+              </div>
+              <button
+                type="button"
+                aria-label="Close component details"
+                className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                onClick={() => {
+                  clearHighlightRef.current();
+                  setSelectedComponent(null);
+                }}
+              >
+                <X className="size-3.5" />
+              </button>
+            </div>
+            <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+              <dt className="text-muted-foreground">Color</dt>
+              <dd className="text-right">{selectedComponent.color}</dd>
+              <dt className="text-muted-foreground">Dimensions</dt>
+              <dd className="text-right">
+                {selectedComponent.dimensions.width} x {selectedComponent.dimensions.height}
+                {selectedComponent.dimensions.depth !== undefined ? ` x ${selectedComponent.dimensions.depth}` : ""} {cad.units}
+              </dd>
+              <dt className="text-muted-foreground">Material</dt>
+              <dd className="text-right">{selectedComponent.material}</dd>
+            </dl>
+          </div>
+        )}
       </div>
       {cad.notes.length > 0 && (
         <div className="line-clamp-2 shrink-0 text-xs text-muted-foreground">{cad.notes[cad.notes.length - 1]}</div>
@@ -751,6 +940,14 @@ function buildCADScene(group: THREE.Group, cad: CADModel) {
   );
   body.castShadow = true;
   body.receiveShadow = true;
+  body.userData.cadSelection = {
+    id: "body",
+    label: cad.name,
+    type: "body",
+    color: cad.color,
+    material: cad.material,
+    dimensions: cad.dimensions,
+  } satisfies CADSelection;
   group.add(body);
 
   const edges = new THREE.LineSegments(
@@ -765,6 +962,14 @@ function buildCADScene(group: THREE.Group, cad: CADModel) {
       const shape = featureMesh(feature, cad, scale, width, height, topZ);
       shape.castShadow = true;
       shape.receiveShadow = true;
+      shape.userData.cadSelection = {
+        id: feature.id,
+        label: feature.label || feature.id,
+        type: feature.type,
+        color: feature.color,
+        material: cad.material,
+        dimensions: { width: feature.width, height: feature.height },
+      } satisfies CADSelection;
       group.add(shape);
     });
 
@@ -868,6 +1073,13 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function formatTimestamp(value?: string) {
+  if (!value) return "Time unavailable";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Time unavailable";
+  return date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
 type Project = {
   id: string;
   name: string;
@@ -918,13 +1130,83 @@ function Home({ onOpen }: { onOpen: (id: string) => void }) {
   );
 }
 
-function Root() {
-  const [openProject, setOpenProject] = React.useState<string | null>(null);
+function NotFound({ onHome }: { onHome: () => void }) {
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-background px-6 text-foreground">
+      <div className="text-center">
+        <h1 className="text-2xl font-semibold tracking-tight">Page not found</h1>
+        <p className="mt-2 text-sm text-muted-foreground">This workspace path does not exist.</p>
+        <Button className="mt-5" onClick={onHome}>
+          Back to projects
+        </Button>
+      </div>
+    </main>
+  );
+}
 
-  if (!openProject) {
-    return <Home onOpen={setOpenProject} />;
+const tabPath: Record<AppTab, string> = {
+  dashboard: "dashboard",
+  docs: "documentation",
+  workspace: "cad-chat",
+  changes: "cad-changes",
+};
+
+function projectPath(projectId: string, tab: AppTab, documentationSection?: string) {
+  const base = `/projects/${encodeURIComponent(projectId)}/${tabPath[tab]}`;
+  if (tab !== "docs" || !documentationSection) return base;
+  return `${base}/${encodeURIComponent(sectionSlug(documentationSection))}`;
+}
+
+function parseRoute(pathname: string): AppRoute {
+  let segments: string[];
+  try {
+    segments = pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  } catch {
+    return { page: "not-found" };
   }
-  return <App onHome={() => setOpenProject(null)} />;
+  if (segments.length === 0) return { page: "home" };
+  if (segments[0] !== "projects" || segments.length < 3 || segments.length > 4) return { page: "not-found" };
+  if (!projects.some((project) => project.id === segments[1])) return { page: "not-found" };
+
+  const tab = (Object.entries(tabPath).find(([, path]) => path === segments[2])?.[0] ?? null) as AppTab | null;
+  if (!tab || (segments.length === 4 && tab !== "docs")) return { page: "not-found" };
+  return { page: "project", projectId: segments[1], tab, documentationSection: segments[3] };
+}
+
+function navigate(path: string) {
+  if (window.location.pathname === path) return;
+  window.history.pushState({}, "", path);
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
+function usePathname() {
+  const [pathname, setPathname] = React.useState(window.location.pathname);
+  React.useEffect(() => {
+    const handlePopState = () => setPathname(window.location.pathname);
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+  return pathname;
+}
+
+function Root() {
+  const route = parseRoute(usePathname());
+
+  if (route.page === "home") {
+    return <Home onOpen={(projectId) => navigate(projectPath(projectId, "dashboard"))} />;
+  }
+  if (route.page === "not-found") {
+    return <NotFound onHome={() => navigate("/")} />;
+  }
+  return (
+    <App
+      tab={route.tab}
+      documentationSection={route.documentationSection}
+      onHome={() => navigate("/")}
+      onTabChange={(tab) => navigate(projectPath(route.projectId, tab))}
+      onDocumentationSectionChange={(section) => navigate(projectPath(route.projectId, "docs", section))}
+    />
+  );
 }
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

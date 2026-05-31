@@ -482,11 +482,21 @@ func (s *server) safePath(id string) (string, error) {
 }
 
 func (s *server) static(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/" || !strings.HasPrefix(r.URL.Path, "/api/") {
-		if _, err := os.Stat(s.staticRoot); err == nil {
-			http.FileServer(http.Dir(s.staticRoot)).ServeHTTP(w, r)
-			return
-		}
+	if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
+		http.NotFound(w, r)
+		return
+	}
+
+	requested := filepath.Join(s.staticRoot, filepath.FromSlash(strings.TrimPrefix(filepath.Clean(r.URL.Path), "/")))
+	if info, err := os.Stat(requested); err == nil && !info.IsDir() {
+		http.ServeFile(w, r, requested)
+		return
+	}
+
+	index := filepath.Join(s.staticRoot, "index.html")
+	if _, err := os.Stat(index); err == nil {
+		http.ServeFile(w, r, index)
+		return
 	}
 	http.NotFound(w, r)
 }
