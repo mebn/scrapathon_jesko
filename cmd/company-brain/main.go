@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"company-brain/internal/brain"
 )
@@ -22,11 +23,12 @@ import (
 const maxUploadBytes = 25 << 20
 
 type server struct {
-	store      string
-	hubPath    string
-	cadPath    string
-	codexPath  string
-	staticRoot string
+	store       string
+	hubPath     string
+	cadPath     string
+	codexPath   string
+	codexEffort string
+	staticRoot  string
 }
 
 type documentDTO struct {
@@ -34,6 +36,12 @@ type documentDTO struct {
 	Name     string    `json:"name"`
 	Size     int64     `json:"size"`
 	Modified time.Time `json:"modified"`
+}
+
+type documentContentDTO struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Content string `json:"content"`
 }
 
 type uploadResponse struct {
@@ -63,14 +71,15 @@ func main() {
 	store := env("BRAIN_STORE", filepath.Join("data", "uploads"))
 	hubPath := env("DOCUMENTATION_HUB_PATH", filepath.Join(filepath.Dir(store), "documentation-hub.json"))
 	cadPath := env("CAD_STATE_PATH", filepath.Join(filepath.Dir(store), "cad-state.json"))
-	codexPath := env("CODEX_BIN", "codex")
+	codexPath := env("CODEX_BIN", defaultCodexPath())
+	codexEffort := env("CODEX_REASONING_EFFORT", "medium")
 	staticRoot := env("STATIC_ROOT", filepath.Join("web", "dist"))
 
 	if err := os.MkdirAll(store, 0o755); err != nil {
 		log.Fatalf("create store: %v", err)
 	}
 
-	s := &server{store: store, hubPath: hubPath, cadPath: cadPath, codexPath: codexPath, staticRoot: staticRoot}
+	s := &server{store: store, hubPath: hubPath, cadPath: cadPath, codexPath: codexPath, codexEffort: codexEffort, staticRoot: staticRoot}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.health)
 	mux.HandleFunc("/api/cad/impacts", s.cadImpacts)
@@ -88,6 +97,7 @@ func main() {
 	log.Printf("upload store: %s", store)
 	log.Printf("documentation hub: %s", hubPath)
 	log.Printf("cad state: %s", cadPath)
+	log.Printf("codex reasoning effort: %s", codexEffort)
 	log.Fatal(http.ListenAndServe(addr, withCORS(mux)))
 }
 
@@ -155,8 +165,8 @@ func (s *server) effectiveCAD() (brain.CADModel, []brain.FileCADImpact, error) {
 }
 
 func (s *server) documentByID(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		methodNotAllowed(w, http.MethodDelete)
+	if r.Method != http.MethodGet && r.Method != http.MethodDelete {
+		methodNotAllowed(w, http.MethodGet, http.MethodDelete)
 		return
 	}
 
@@ -164,6 +174,26 @@ func (s *server) documentByID(w http.ResponseWriter, r *http.Request) {
 	path, err := s.safePath(id)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if r.Method == http.MethodGet {
+		data, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusNotFound, fmt.Errorf("document not found"))
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if len(data) > 1<<20 {
+			data = data[:1<<20]
+		}
+		if !utf8.Valid(data) {
+			writeError(w, http.StatusUnsupportedMediaType, fmt.Errorf("document is not valid UTF-8 text"))
+			return
+		}
+		writeJSON(w, http.StatusOK, documentContentDTO{ID: id, Name: displayName(id), Content: string(data)})
 		return
 	}
 	if err := os.Remove(path); err != nil {
@@ -292,7 +322,7 @@ func (s *server) chat(w http.ResponseWriter, r *http.Request) {
 		snippets = []brain.SourceSnippet{}
 	}
 	prompt := brain.BuildCADChatPrompt(req.Message, snippets, hub, currentCAD)
-	answer, err := runCodexJSON(r.Context(), s.codexPath, s.store, prompt, brain.CADChatSchema)
+	answer, err := runCodexJSON(r.Context(), s.codexPath, s.codexEffort, s.store, prompt, brain.CADChatSchema)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
@@ -418,7 +448,7 @@ func (s *server) rebuildHub(ctx context.Context) (*brain.DocumentationHub, error
 	}
 
 	prompt := brain.BuildDocumentationHubPrompt(corpus)
-	answer, err := runCodexJSON(ctx, s.codexPath, s.store, prompt, brain.DocumentationHubSchema)
+	answer, err := runCodexJSON(ctx, s.codexPath, s.codexEffort, s.store, prompt, brain.DocumentationHubSchema)
 	if err != nil {
 		return nil, err
 	}
@@ -501,11 +531,11 @@ func (s *server) static(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
-func runCodex(ctx context.Context, codexPath, workdir, prompt string) (string, error) {
-	return runCodexInternal(ctx, codexPath, workdir, prompt, "")
+func runCodex(ctx context.Context, codexPath, codexEffort, workdir, prompt string) (string, error) {
+	return runCodexInternal(ctx, codexPath, codexEffort, workdir, prompt, "")
 }
 
-func runCodexJSON(ctx context.Context, codexPath, workdir, prompt, schema string) (string, error) {
+func runCodexJSON(ctx context.Context, codexPath, codexEffort, workdir, prompt, schema string) (string, error) {
 	schemaFile, err := os.CreateTemp("", "company-brain-schema-*.json")
 	if err != nil {
 		return "", err
@@ -519,10 +549,10 @@ func runCodexJSON(ctx context.Context, codexPath, workdir, prompt, schema string
 	schemaFile.Close()
 	defer os.Remove(schemaPath)
 
-	return runCodexInternal(ctx, codexPath, workdir, prompt, schemaPath)
+	return runCodexInternal(ctx, codexPath, codexEffort, workdir, prompt, schemaPath)
 }
 
-func runCodexInternal(ctx context.Context, codexPath, workdir, prompt, schemaPath string) (string, error) {
+func runCodexInternal(ctx context.Context, codexPath, codexEffort, workdir, prompt, schemaPath string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
@@ -535,6 +565,7 @@ func runCodexInternal(ctx context.Context, codexPath, workdir, prompt, schemaPat
 	defer os.Remove(outPath)
 
 	args := []string{
+		"--config", fmt.Sprintf("model_reasoning_effort=%q", codexEffort),
 		"--ask-for-approval", "never",
 		"--sandbox", "read-only",
 		"--cd", workdir,
@@ -629,4 +660,15 @@ func env(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func defaultCodexPath() string {
+	if path, err := exec.LookPath("codex"); err == nil {
+		return path
+	}
+	const bundledCodex = "/Applications/Codex.app/Contents/Resources/codex"
+	if info, err := os.Stat(bundledCodex); err == nil && !info.IsDir() {
+		return bundledCodex
+	}
+	return "codex"
 }

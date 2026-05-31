@@ -27,4 +27,5 @@ Open `http://localhost:5173`.
 - `DOCUMENTATION_HUB_PATH`: structured documentation hub JSON path, default `data/documentation-hub.json`
 - `CAD_STATE_PATH`: live CAD model JSON path, default `data/cad-state.json`
 - `CODEX_BIN`: Codex CLI path, default `codex`
+- `CODEX_REASONING_EFFORT`: Codex CLI reasoning effort, default `medium`
 - `CORS_ORIGIN`: frontend origin, default `http://localhost:5173`

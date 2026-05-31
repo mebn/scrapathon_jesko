@@ -2,19 +2,28 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import * as THREE from "three";
 import {
+  Activity,
   BookOpenText,
   Box,
+  Braces,
   ChevronLeft,
+  CircleCheck,
   Clock3,
+  Cpu,
+  Database,
   FileText,
+  HardDrive,
   Wand2,
   FolderKanban,
   LayoutDashboard,
   Loader2,
   MessageSquareText,
+  Network,
   Plus,
   RefreshCw,
+  ScanSearch,
   Send,
+  ShieldCheck,
   Smile,
   Trash2,
   UploadCloud,
@@ -29,6 +38,12 @@ type DocumentItem = {
   name: string;
   size: number;
   modified: string;
+};
+
+type DocumentContent = {
+  id: string;
+  name: string;
+  content: string;
 };
 
 type DocumentationPage = {
@@ -137,6 +152,10 @@ const api = {
     const res = await fetch("/api/documents");
     return readJSON<DocumentItem[]>(res);
   },
+  async getDocument(id: string) {
+    const res = await fetch(`/api/documents/${encodeURIComponent(id)}`);
+    return readJSON<DocumentContent>(res);
+  },
   async listHub() {
     const res = await fetch("/api/library");
     return readJSON<DocumentationHub>(res);
@@ -197,16 +216,22 @@ function App({
   const [cad, setCAD] = React.useState<CADModel>(emptyCAD);
   const [impacts, setImpacts] = React.useState<FileCADImpact[]>([]);
   const [messages, setMessages] = React.useState<Message[]>([
-    { role: "assistant", content: "Upload docs, then ask. I answer from stored files and cite names." },
+    {
+      role: "assistant",
+      content: "Ingest source artifacts, then query indexed context or issue CAD changes. Responses cite filenames and CAD outputs pass documentation constraints.",
+    },
   ]);
   const [question, setQuestion] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [uploading, setUploading] = React.useState(false);
   const [rebuilding, setRebuilding] = React.useState(false);
+  const [previewing, setPreviewing] = React.useState(false);
+  const [previewDocument, setPreviewDocument] = React.useState<DocumentContent | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const fileInput = React.useRef<HTMLInputElement>(null);
 
   const pageCount = React.useMemo(() => hub.sections.reduce((total, section) => total + section.pages.length, 0), [hub.sections]);
+  const featureCount = React.useMemo(() => cad.features.filter((feature) => feature.type !== "plate").length, [cad.features]);
   const active = React.useMemo(
     () => hub.sections.find((section) => sectionSlug(section.title) === documentationSection) ?? null,
     [hub.sections, documentationSection],
@@ -277,6 +302,18 @@ function App({
     }
   }
 
+  async function handlePreview(id: string) {
+    setPreviewing(true);
+    setError(null);
+    try {
+      setPreviewDocument(await api.getDocument(id));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
   async function handleRebuild() {
     setError(null);
     setRebuilding(true);
@@ -316,21 +353,22 @@ function App({
   }
 
   const navItems = [
-    { id: "dashboard" as const, label: "Dashboard", icon: LayoutDashboard, badge: 0 },
-    { id: "docs" as const, label: "Documentation", icon: FolderKanban, badge: 0 },
-    { id: "workspace" as const, label: "CAD & Chat", icon: Box, badge: 0 },
-    { id: "changes" as const, label: "CAD Changes", icon: Wand2, badge: impacts.length },
+    { id: "dashboard" as const, label: "Control Overview", icon: LayoutDashboard, badge: 0 },
+    { id: "docs" as const, label: "Knowledge Index", icon: FolderKanban, badge: 0 },
+    { id: "workspace" as const, label: "CAD Copilot", icon: Box, badge: 0 },
+    { id: "changes" as const, label: "Directive Audit", icon: Wand2, badge: impacts.length },
   ];
 
   return (
     <main className="flex h-screen overflow-hidden bg-background text-foreground">
-      <aside className="flex w-56 shrink-0 flex-col bg-muted/40 px-3 py-4">
+      <aside className="flex w-48 shrink-0 flex-col bg-muted/40 px-3 py-4 xl:w-56">
         <button type="button" onClick={onHome} className="flex flex-col rounded-md px-2 py-1 text-left transition-colors hover:bg-muted">
           <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <ChevronLeft className="size-3.5" />
             Projects
           </span>
           <span className="text-lg font-semibold tracking-tight">Smiley</span>
+          <span className="mt-0.5 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">ENG-MFG / SMY-01</span>
         </button>
         <nav className="mt-5 flex flex-col gap-1">
           {navItems.map((item) => {
@@ -361,9 +399,19 @@ function App({
             );
           })}
         </nav>
-        <div className="mt-auto flex flex-col gap-1 px-2 text-xs text-muted-foreground">
-          <span>{documents.length} documents</span>
-          <span>{pageCount} pages</span>
+        <div className="mt-auto flex flex-col gap-2 px-2 text-xs text-muted-foreground">
+          <div className="flex items-center gap-1.5 text-primary">
+            <span className="size-1.5 rounded-full bg-primary" />
+            <span className="font-mono text-[10px] uppercase tracking-wider">System nominal</span>
+          </div>
+          <div className="grid grid-cols-2 gap-x-2 gap-y-1 font-mono text-[10px] uppercase tracking-wide">
+            <span>Artifacts</span>
+            <span className="text-right text-foreground">{documents.length}</span>
+            <span>Index pages</span>
+            <span className="text-right text-foreground">{pageCount}</span>
+            <span>CAD features</span>
+            <span className="text-right text-foreground">{featureCount}</span>
+          </div>
         </div>
       </aside>
 
@@ -373,35 +421,62 @@ function App({
         )}
 
         {tab === "dashboard" ? (
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-3">
+          <div className="flex min-h-0 flex-1 flex-col overflow-auto p-3">
             <div className="shrink-0 pb-4">
               <div className="flex items-center gap-2">
                 <LayoutDashboard className="size-4 text-muted-foreground" />
-                <h2 className="text-base font-semibold tracking-normal">Dashboard</h2>
+                <h2 className="text-base font-semibold tracking-normal">Engineering Control Overview</h2>
               </div>
-              <p className="mt-1 text-sm text-muted-foreground">Project overview and AI-applied CAD activity.</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Source-grounded knowledge ingestion, constraint-aware CAD state, and directive traceability.
+              </p>
             </div>
 
-            <div className="grid shrink-0 grid-cols-2 gap-3 pb-4">
+            <div className="grid shrink-0 grid-cols-2 gap-3 pb-4 xl:grid-cols-4">
               <div className="rounded-lg bg-muted/40 p-4">
-                <div className="text-sm text-muted-foreground">Documents</div>
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <HardDrive className="size-3.5" />
+                  Source artifacts
+                </div>
                 <div className="mt-2 text-3xl font-semibold tracking-tight">{documents.length}</div>
+                <div className="mt-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">filesystem corpus</div>
               </div>
               <div className="rounded-lg bg-muted/40 p-4">
-                <div className="text-sm text-muted-foreground">Changes made by AI</div>
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Database className="size-3.5" />
+                  Indexed pages
+                </div>
+                <div className="mt-2 text-3xl font-semibold tracking-tight">{pageCount}</div>
+                <div className="mt-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">structured knowledge hub</div>
+              </div>
+              <div className="rounded-lg bg-muted/40 p-4">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Braces className="size-3.5" />
+                  CAD features
+                </div>
+                <div className="mt-2 text-3xl font-semibold tracking-tight">{featureCount}</div>
+                <div className="mt-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">state-driven geometry</div>
+              </div>
+              <div className="rounded-lg bg-muted/40 p-4">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Activity className="size-3.5" />
+                  Applied directives
+                </div>
                 <div className="mt-2 text-3xl font-semibold tracking-tight">{aiChanges.length}</div>
+                <div className="mt-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">document overlay events</div>
               </div>
             </div>
 
-            <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_19rem]">
+            <section className="flex min-h-52 flex-col overflow-hidden">
               <div className="flex shrink-0 items-center gap-2 pb-3">
                 <Wand2 className="size-4 text-muted-foreground" />
-                <h3 className="text-sm font-semibold">AI changes</h3>
+                <h3 className="text-sm font-semibold">CAD directive event stream</h3>
               </div>
               <div className="min-h-0 flex-1 overflow-auto pr-1">
                 {aiChanges.length === 0 ? (
                   <div className="flex min-h-48 items-center justify-center rounded-lg bg-muted/40 p-6 text-center text-sm text-muted-foreground">
-                    No AI-applied CAD changes yet.
+                    No document-layer CAD directives applied.
                   </div>
                 ) : (
                   <div className="divide-y rounded-lg bg-muted/40">
@@ -421,10 +496,30 @@ function App({
                 )}
               </div>
             </section>
+              <section className="flex min-h-0 flex-col overflow-hidden rounded-lg bg-muted/40 p-4">
+                <div className="flex items-center gap-2">
+                  <Network className="size-4 text-muted-foreground" />
+                  <h3 className="text-sm font-semibold">Runtime pipeline</h3>
+                </div>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">Local artifact processing path for knowledge and CAD operations.</p>
+                <div className="mt-4 space-y-3">
+                  <PipelineStage icon={UploadCloud} label="01 / INGEST" detail="Multipart artifact upload" />
+                  <PipelineStage icon={ScanSearch} label="02 / INDEX" detail="Structured hub extraction" />
+                  <PipelineStage icon={Cpu} label="03 / RETRIEVE" detail="Token-ranked source context" />
+                  <PipelineStage icon={ShieldCheck} label="04 / VALIDATE" detail="Constraint-aware CAD output" />
+                </div>
+                <div className="mt-auto border-t pt-3">
+                  <div className="flex items-center justify-between gap-3 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                    <span>Model state</span>
+                    <span className="text-foreground">{cad.updatedAt ? formatTimestamp(cad.updatedAt) : "Initialized"}</span>
+                  </div>
+                </div>
+              </section>
+            </div>
           </div>
         ) : tab === "docs" ? (
-          <div className="flex min-h-0 flex-1 gap-3 overflow-hidden p-3">
-            <section className="flex w-72 shrink-0 flex-col gap-3 overflow-hidden">
+          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto p-3 xl:flex-row xl:overflow-hidden">
+            <section className="flex max-h-96 w-full shrink-0 flex-col gap-3 overflow-hidden xl:max-h-none xl:w-72">
               <button
                 className="flex min-h-28 w-full flex-col items-center justify-center gap-2 rounded-lg bg-muted/40 px-4 text-center transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-70"
                 onClick={() => fileInput.current?.click()}
@@ -432,8 +527,8 @@ function App({
                 disabled={uploading}
               >
                 {uploading ? <Loader2 className="size-5 animate-spin" /> : <UploadCloud className="size-5" />}
-                <span className="text-sm font-medium">{uploading ? "Structuring files" : "Upload documents"}</span>
-                <span className="text-xs text-muted-foreground">TXT, Markdown, CSV, JSON, code, HTML</span>
+                <span className="text-sm font-medium">{uploading ? "Extracting knowledge graph" : "Ingest technical artifacts"}</span>
+                <span className="text-xs text-muted-foreground">TXT · Markdown · CSV · JSON · code · HTML</span>
               </button>
               <input
                 ref={fileInput}
@@ -444,23 +539,32 @@ function App({
               />
               <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-auto pr-1">
                 {documents.length === 0 ? (
-                  <div className="rounded-md bg-muted/40 p-3 text-sm text-muted-foreground">No uploads yet.</div>
+                  <div className="rounded-md bg-muted/40 p-3 text-sm text-muted-foreground">No source artifacts ingested.</div>
                 ) : (
                   documents.map((doc) => (
-                    <div key={doc.id} className="flex items-center gap-2 rounded-md bg-muted/40 px-2.5 py-2">
-                      <FileText className="size-4 shrink-0 text-muted-foreground" />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5">
-                          <span className="truncate text-sm font-medium">{doc.name}</span>
-                          {impactedSources.has(doc.name) && (
-                            <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
-                              <Wand2 className="size-2.5" />
-                              CAD
-                            </span>
-                          )}
+                    <div key={doc.id} className="flex items-center gap-1 rounded-md bg-muted/40 px-1 py-1">
+                      <button
+                        type="button"
+                        className="flex min-w-0 flex-1 items-center gap-2 rounded px-1.5 py-1 text-left transition-colors hover:bg-accent"
+                        onClick={() => handlePreview(doc.id)}
+                        disabled={previewing}
+                      >
+                        <FileText className="size-4 shrink-0 text-muted-foreground" />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="truncate text-sm font-medium">{doc.name}</span>
+                            {impactedSources.has(doc.name) && (
+                              <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                                <Wand2 className="size-2.5" />
+                                CAD
+                              </span>
+                            )}
+                          </div>
+                          <div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                            {formatBytes(doc.size)} · {formatTimestamp(doc.modified)}
+                          </div>
                         </div>
-                        <div className="text-xs text-muted-foreground">{formatBytes(doc.size)}</div>
-                      </div>
+                      </button>
                       <Button
                         aria-label={`Delete ${doc.name}`}
                         title={`Delete ${doc.name}`}
@@ -481,20 +585,20 @@ function App({
               <div className="flex shrink-0 items-center justify-between gap-3 pb-3">
                 <div className="flex items-center gap-2">
                   <FolderKanban className="size-4 text-muted-foreground" />
-                  <h2 className="text-base font-semibold tracking-normal">Documentation Hub</h2>
+                  <h2 className="text-base font-semibold tracking-normal">Technical Knowledge Index</h2>
                 </div>
                 <Button variant="outline" size="sm" onClick={handleRebuild} disabled={rebuilding || uploading || documents.length === 0}>
                   {rebuilding ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-                  Rebuild
+                  Re-index
                 </Button>
               </div>
               <div className="shrink-0 pb-3 text-sm text-muted-foreground">
-                {rebuilding || uploading ? "Codex is reading uploaded files and generating documentation." : hub.summary}
+                {rebuilding || uploading ? "Codex extraction pass active: rebuilding structured index from local source artifacts." : hub.summary}
               </div>
               <div className="min-h-0 flex-1 overflow-auto pr-1">
                 {hub.sections.length === 0 ? (
                   <div className="flex min-h-48 items-center justify-center rounded-lg bg-muted/40 p-6 text-center text-sm text-muted-foreground">
-                    No documentation generated from uploaded files.
+                    No structured index generated from ingested artifacts.
                   </div>
                 ) : active ? (
                   <article className="space-y-4">
@@ -504,7 +608,7 @@ function App({
                       className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
                     >
                       <ChevronLeft className="size-4" />
-                      All sections
+                      Index sections
                     </button>
                     <div>
                       <h3 className="text-lg font-semibold tracking-tight">{active.title}</h3>
@@ -571,15 +675,15 @@ function App({
             </section>
           </div>
         ) : tab === "workspace" ? (
-          <div className="flex min-h-0 flex-1 gap-3 overflow-hidden p-3">
-            <section className="flex min-h-0 basis-3/5 flex-col overflow-hidden">
+          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto p-3 xl:flex-row xl:overflow-hidden">
+            <section className="flex min-h-[26rem] basis-3/5 flex-col overflow-hidden">
               <CADPreview cad={cad} />
             </section>
 
-            <section className="flex min-h-0 basis-2/5 flex-col overflow-hidden rounded-lg bg-muted/40">
+            <section className="flex min-h-[20rem] basis-2/5 flex-col overflow-hidden rounded-lg bg-muted/40">
               <div className="flex shrink-0 items-center gap-2 px-4 py-3">
                 <MessageSquareText className="size-4 text-muted-foreground" />
-                <h2 className="text-base font-semibold tracking-normal">Ask</h2>
+                <h2 className="text-base font-semibold tracking-normal">Engineering Copilot</h2>
               </div>
               <div className="min-h-0 flex-1 space-y-3 overflow-auto px-4">
                 {messages.map((message, index) => (
@@ -601,7 +705,7 @@ function App({
                 {busy && (
                   <div className="mr-auto flex max-w-[86%] items-center gap-2 rounded-lg bg-background px-4 py-2.5 text-sm text-muted-foreground">
                     <Loader2 className="size-4 animate-spin" />
-                    Codex reading uploaded docs
+                    Retrieving source context and validating CAD state
                   </div>
                 )}
               </div>
@@ -610,7 +714,7 @@ function App({
                   <Textarea
                     value={question}
                     onChange={(event) => setQuestion(event.target.value)}
-                    placeholder="Ask about docs or modify the CAD..."
+                    placeholder="Query indexed artifacts or issue a CAD modification..."
                     className="min-h-14 resize-none"
                     onKeyDown={(event) => {
                       if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
@@ -629,15 +733,15 @@ function App({
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-3">
             <div className="flex shrink-0 items-center gap-2 pb-1">
               <Wand2 className="size-4 text-muted-foreground" />
-              <h2 className="text-base font-semibold tracking-normal">CAD Changes</h2>
+              <h2 className="text-base font-semibold tracking-normal">CAD Directive Audit Log</h2>
             </div>
             <p className="shrink-0 pb-3 text-sm text-muted-foreground">
-              Files containing instructions that modified the CAD model. Remove a file to revert its changes.
+              Read-time document overlays applied to base CAD state. Remove source artifact to revert associated overlay.
             </p>
             <div className="min-h-0 flex-1 overflow-auto pr-1">
               {impacts.length === 0 ? (
                 <div className="flex min-h-48 items-center justify-center rounded-lg bg-muted/40 p-6 text-center text-sm text-muted-foreground">
-                  No uploaded file changes the CAD yet. Upload a file with an instruction like
+                  No source artifact applies CAD overlay directives. Ingest artifact containing instruction such as
                   <br />
                   "no red allowed, change all red to blue".
                 </div>
@@ -668,7 +772,79 @@ function App({
           </div>
         )}
       </div>
+      {previewDocument && (
+        <DocumentPreview document={previewDocument} onClose={() => setPreviewDocument(null)} />
+      )}
     </main>
+  );
+}
+
+function DocumentPreview({ document, onClose }: { document: DocumentContent; onClose: () => void }) {
+  React.useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="document-preview-title"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <article className="flex max-h-[82vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg bg-background shadow-2xl ring-1 ring-border">
+        <header className="flex shrink-0 items-start gap-3 border-b px-4 py-3">
+          <FileText className="mt-0.5 size-4 shrink-0 text-primary" />
+          <div className="min-w-0 flex-1">
+            <h2 id="document-preview-title" className="truncate text-sm font-semibold">
+              {document.name}
+            </h2>
+            <div className="mt-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+              Source artifact preview · UTF-8 text · read-only
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="Close document preview"
+            className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            onClick={onClose}
+          >
+            <X className="size-4" />
+          </button>
+        </header>
+        <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words bg-muted/30 p-4 font-mono text-xs leading-6 text-foreground">
+          {document.content}
+        </pre>
+      </article>
+    </div>
+  );
+}
+
+function PipelineStage({
+  icon: Icon,
+  label,
+  detail,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  detail: string;
+}) {
+  return (
+    <div className="flex items-start gap-2.5">
+      <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-background text-primary">
+        <Icon className="size-3.5" />
+      </div>
+      <div>
+        <div className="font-mono text-[10px] font-semibold tracking-wider text-foreground">{label}</div>
+        <div className="mt-0.5 text-xs text-muted-foreground">{detail}</div>
+      </div>
+    </div>
   );
 }
 
@@ -768,7 +944,7 @@ function CADPreview({ cad }: { cad: CADModel }) {
             emissive: material.emissive.getHex(),
             intensity: material.emissiveIntensity,
           });
-          material.emissive.setHex(0x14b8a6);
+          material.emissive.setHex(0x2563eb);
           material.emissiveIntensity = 0.85;
         } else {
           const previous = highlightStates.get(material);
@@ -870,16 +1046,29 @@ function CADPreview({ cad }: { cad: CADModel }) {
         <div className="flex items-center gap-2">
           <Box className="size-4 text-muted-foreground" />
           <div>
+            <div className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">CAD state / assembly preview</div>
             <div className="text-sm font-semibold">{cad.name}</div>
-            <div className="text-xs text-muted-foreground">
-              {cad.dimensions.width} x {cad.dimensions.height} x {cad.dimensions.depth} {cad.units} · {cad.material} · {cad.color}
+            <div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+              envelope {cad.dimensions.width} x {cad.dimensions.height} x {cad.dimensions.depth} {cad.units} · {cad.material} · finish {cad.color}
             </div>
           </div>
         </div>
-        <div className="rounded-md bg-muted/40 px-2 py-1 text-xs text-muted-foreground">Live CAD</div>
+        <div className="flex items-center gap-2">
+          <div className="rounded-md bg-muted/40 px-2 py-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+            {cad.features.filter((feature) => feature.type !== "plate").length} features
+          </div>
+          <div className="flex items-center gap-1.5 rounded-md bg-primary/10 px-2 py-1 font-mono text-[10px] uppercase tracking-wide text-primary">
+            <CircleCheck className="size-3" />
+            Validated state
+          </div>
+        </div>
       </div>
       <div className="relative min-h-0 flex-1 rounded-lg bg-muted/40 p-2">
         <canvas ref={canvasRef} className="h-full w-full cursor-grab rounded-md active:cursor-grabbing" />
+        <div className="pointer-events-none absolute left-4 top-4 flex flex-col gap-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+          <span>Interactive geometry viewport</span>
+          <span>Drag orbit · scroll zoom · select feature</span>
+        </div>
         {selectedComponent && (
           <div className="absolute bottom-4 right-4 w-64 rounded-lg bg-background/95 p-3 shadow-lg ring-1 ring-border backdrop-blur">
             <div className="flex items-start gap-2">
@@ -900,9 +1089,13 @@ function CADPreview({ cad }: { cad: CADModel }) {
               </button>
             </div>
             <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+              <dt className="text-muted-foreground">Component ID</dt>
+              <dd className="truncate text-right font-mono text-[10px] uppercase">{selectedComponent.id}</dd>
+              <dt className="text-muted-foreground">Feature class</dt>
+              <dd className="text-right capitalize">{selectedComponent.type}</dd>
               <dt className="text-muted-foreground">Color</dt>
               <dd className="text-right">{selectedComponent.color}</dd>
-              <dt className="text-muted-foreground">Dimensions</dt>
+              <dt className="text-muted-foreground">Envelope</dt>
               <dd className="text-right">
                 {selectedComponent.dimensions.width} x {selectedComponent.dimensions.height}
                 {selectedComponent.dimensions.depth !== undefined ? ` x ${selectedComponent.dimensions.depth}` : ""} {cad.units}
@@ -912,6 +1105,10 @@ function CADPreview({ cad }: { cad: CADModel }) {
             </dl>
           </div>
         )}
+      </div>
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+        <span>Three.js WebGL renderer · document constraints enabled</span>
+        <span>{cad.updatedAt ? `State updated ${formatTimestamp(cad.updatedAt)}` : "State initialized"}</span>
       </div>
       {cad.notes.length > 0 && (
         <div className="line-clamp-2 shrink-0 text-xs text-muted-foreground">{cad.notes[cad.notes.length - 1]}</div>
@@ -1087,7 +1284,7 @@ type Project = {
 };
 
 const projects: Project[] = [
-  { id: "smiley", name: "Smiley", description: "Docs, documentation hub, and live CAD workspace." },
+  { id: "smiley", name: "Smiley", description: "Constraint-aware manufacturing knowledge index with live, state-driven CAD workspace." },
 ];
 
 function Home({ onOpen }: { onOpen: (id: string) => void }) {
@@ -1095,8 +1292,8 @@ function Home({ onOpen }: { onOpen: (id: string) => void }) {
     <main className="min-h-screen overflow-auto bg-background text-foreground">
       <div className="mx-auto w-full max-w-5xl px-6 py-16">
         <header className="mb-10">
-          <h1 className="text-3xl font-semibold tracking-tight">Company Brain</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Select a project to open its workspace.</p>
+          <h1 className="text-3xl font-semibold tracking-tight">Engineering Knowledge Control</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Open manufacturing workspace for indexed artifacts, CAD state, and directive traceability.</p>
         </header>
 
         <div className="grid grid-cols-3 gap-4">
@@ -1113,6 +1310,7 @@ function Home({ onOpen }: { onOpen: (id: string) => void }) {
               <div>
                 <div className="text-base font-semibold">{project.name}</div>
                 <div className="mt-1 line-clamp-2 text-sm text-muted-foreground">{project.description}</div>
+                <div className="mt-3 font-mono text-[10px] uppercase tracking-wider text-primary">ENG-MFG / Active</div>
               </div>
             </button>
           ))}
@@ -1122,7 +1320,7 @@ function Home({ onOpen }: { onOpen: (id: string) => void }) {
             className="flex h-44 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-input text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
             <Plus className="size-6" />
-            <span className="text-sm font-medium">New project</span>
+            <span className="text-sm font-medium">Provision workspace</span>
           </button>
         </div>
       </div>

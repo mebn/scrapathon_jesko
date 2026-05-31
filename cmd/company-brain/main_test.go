@@ -44,3 +44,27 @@ func TestStaticServesSPAFallbackForDeepLinks(t *testing.T) {
 		})
 	}
 }
+
+func TestDocumentByIDReturnsTextContent(t *testing.T) {
+	store := t.TempDir()
+	id := "123-engineering_specs.txt"
+	if err := os.WriteFile(filepath.Join(store, id), []byte("max load: 48 kg"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &server{store: store}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/documents/"+id, nil)
+	recorder := httptest.NewRecorder()
+	s.documentByID(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `"name":"engineering specs.txt"`) {
+		t.Fatalf("body missing display name: %s", body)
+	}
+	if !strings.Contains(body, `"content":"max load: 48 kg"`) {
+		t.Fatalf("body missing content: %s", body)
+	}
+}
